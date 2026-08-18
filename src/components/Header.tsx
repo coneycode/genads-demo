@@ -134,11 +134,11 @@ export default function Header() {
               value={llmApiKey}
               onChange={(e) => setLlmConfig({ apiKey: e.target.value })}
               className="w-56 px-2 py-1 rounded border border-slate-200"
-              placeholder={llmApiKey ? "••••••••（如需更换直接输入新 key）" : "sk-..."}
+              placeholder={llmApiKey ? "••••••••（如需更换直接输入新 key）" : "粘贴你的 Key（仅存内存，不进代码/不持久化）"}
             />
           </Field>
           <span className="text-[10px] text-slate-400">
-            默认预填 DeepSeek + deepseek-v4-flash，key 已隐藏。可点上方切换 Provider 或自行修改。仅存内存、不持久化。
+            默认预填 DeepSeek / deepseek-v4-flash。Key 不内置——请粘贴你自己的（静态前端藏不住密钥，内置=公开）。可点上方切换 Provider。
           </span>
           {engineMode === "llm" && (
             <span
