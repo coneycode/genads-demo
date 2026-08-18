@@ -93,32 +93,52 @@ export default function Header() {
 
       {showCfg && engineMode === "llm" && (
         <div className="mt-2 flex gap-2 items-end flex-wrap text-xs">
+          <div className="flex flex-col gap-1">
+            <span className="text-[10px] text-slate-400">Provider（点选切换）</span>
+            <div className="flex flex-wrap gap-1">
+              {PROVIDERS.map((p) => {
+                const active = llmBaseURL === p.baseURL;
+                return (
+                  <button
+                    key={p.name}
+                    onClick={() => setLlmConfig({ baseURL: p.baseURL, model: p.model })}
+                    className={`text-[11px] px-2 py-0.5 rounded border ${
+                      active
+                        ? "bg-blue-600 text-white border-blue-600"
+                        : "bg-white text-slate-600 border-slate-200 hover:border-blue-300"
+                    }`}
+                  >
+                    {p.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <Field label={`Model（当前：${llmModel}）`}>
+            <input
+              value={llmModel}
+              onChange={(e) => setLlmConfig({ model: e.target.value })}
+              className="w-48 px-2 py-1 rounded border border-slate-200"
+            />
+          </Field>
           <Field label="Base URL">
             <input
               value={llmBaseURL}
               onChange={(e) => setLlmConfig({ baseURL: e.target.value })}
               className="w-56 px-2 py-1 rounded border border-slate-200"
-              placeholder="https://api.openai.com/v1"
             />
           </Field>
-          <Field label="Model">
-            <input
-              value={llmModel}
-              onChange={(e) => setLlmConfig({ model: e.target.value })}
-              className="w-40 px-2 py-1 rounded border border-slate-200"
-            />
-          </Field>
-          <Field label="API Key">
+          <Field label={`API Key${llmApiKey ? "（已配置·隐藏）" : ""}`}>
             <input
               type="password"
               value={llmApiKey}
               onChange={(e) => setLlmConfig({ apiKey: e.target.value })}
               className="w-56 px-2 py-1 rounded border border-slate-200"
-              placeholder="sk-..."
+              placeholder={llmApiKey ? "••••••••（如需更换直接输入新 key）" : "sk-..."}
             />
           </Field>
           <span className="text-[10px] text-slate-400">
-            仅存内存、不持久化。默认预填 DeepSeek，填入你的 Key 即可用。
+            默认预填 DeepSeek + deepseek-v4-flash，key 已隐藏。可点上方切换 Provider 或自行修改。仅存内存、不持久化。
           </span>
           {engineMode === "llm" && (
             <span
@@ -134,7 +154,7 @@ export default function Header() {
                 ? "未配置 Key（发消息会用预设引擎）"
                 : llmError
                 ? `LLM 调用失败，已回退预设：${llmError}`
-                : "LLM 已接通（发任意消息走真实模型）"}
+                : `LLM 已接通 · ${llmModel}（发任意消息走真实模型）`}
             </span>
           )}
         </div>
@@ -142,6 +162,14 @@ export default function Header() {
     </header>
   );
 }
+
+const PROVIDERS = [
+  { name: "DeepSeek", baseURL: "https://api.deepseek.com", model: "deepseek-v4-flash" },
+  { name: "OpenAI", baseURL: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+  { name: "火山方舟", baseURL: "https://ark.cn-beijing.volces.com/api/v3", model: "doubao-1-5-lite-32k" },
+  { name: "通义", baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-turbo" },
+  { name: "智谱", baseURL: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash" },
+];
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (

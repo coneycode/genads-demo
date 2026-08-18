@@ -139,7 +139,7 @@ export const useStore = create<State>((set, get) => ({
   aggressiveness: 0.25,
   engineMode: "preset",
   llmBaseURL: "https://api.deepseek.com",
-  llmApiKey: "",
+  llmApiKey: import.meta.env.VITE_DEEPSEEK_KEY ?? "",
   llmModel: "deepseek-v4-flash",
   llmError: null,
 
