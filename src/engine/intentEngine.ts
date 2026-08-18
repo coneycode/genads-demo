@@ -133,6 +133,9 @@ export class LLMEngine implements IntentEngine {
   // 统一 chat/completions 调用。payload 不含 baseURL/key(由本方法决定走哪条路)。
   private async call(payload: Record<string, unknown>): Promise<any> {
     const { baseURL, apiKey } = this.opts;
+    // DeepSeek 默认开 thinking(思考模式),思考过程有随机性,会让意图判定/匹配度抖动。
+    // 关掉 thinking + temp 0 → 确定性,同一句每次结果一致。仅 DeepSeek 带 thinking 参数(其它 provider 不带,避免 400)。
+    if (/deepseek\.com/.test(baseURL)) payload.thinking = { type: "disabled" };
     if (apiKey) {
       // 直连(用户自带 key)
       const res = await fetch(baseURL.replace(/\/$/, "") + "/chat/completions", {
@@ -160,14 +163,17 @@ export class LLMEngine implements IntentEngine {
     const { model } = this.opts;
     const sys = `你是一个意图识别器。对用户在AI对话助手里发的一句话，判断其商业意图强度。
 只输出一个 JSON，不要任何解释或代码块：{"strength": 0~1浮点, "category": "phone"|"renovation"|"none", "reason": "一句话中文解释"}
-规则：明确预算/型号/购买/决策对比=强(>=0.7)；泛咨询使用问题=弱(0.3~0.7)；纯情感/纯知识/纯工具任务=none(<0.3)。`;
+规则：
+- 强(>=0.7)：任何明确的购买/推荐/选购请求——只要用户想买东西或要推荐（含"推荐""买""想换""预算""型号对比"等），即便没给具体预算或型号，也算强。
+- 弱(0.3~0.7)：泛使用咨询（如"手机屏幕变暗怎么回事""小户型怎么显大"），不是要买，是问用法/知识。
+- none(<0.3)：纯情感/纯知识/纯工具任务（emo、光合作用、写辞职信等）。`;
     const data = await this.call({
       model,
       messages: [
         { role: "system", content: sys },
         { role: "user", content: query },
       ],
-      temperature: 0.2,
+      temperature: 0,
       response_format: { type: "json_object" },
     });
     const content: string = data?.choices?.[0]?.message?.content ?? "";
@@ -231,7 +237,9 @@ export class LLMEngine implements IntentEngine {
     const sys =
       "你是 AI 对话助手。用一两句中文自然回答用户。若用户在选购，可顺带引出最贴合的选项，但别堆砌。不要复读商家文案原文。";
     let user = `用户说：${query}`;
-    if (winner && gate !== "none") {
+    // 仅 trigger（出卡）时才让回复模型知道中选产品并点名；soft 不出卡，
+    // 不透露具体商家，避免"文字点了名却没有卡片"的错位
+    if (winner && gate === "trigger") {
       user += `\n（系统已为你匹配选项：${winner.name}——${winner.adText}。可自然地引出，但用自己的话。）`;
     }
     const data = await this.call({
