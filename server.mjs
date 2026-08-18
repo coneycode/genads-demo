@@ -1,10 +1,27 @@
 // server.mjs —— 自托管:静态站 + /api/llm 代理(密钥留服务器,不进浏览器)
-// 运行: DEEPSEEK_KEY=sk-... node server.mjs   (PORT 默认 4173,可改)
+// 运行(三选一,优先级 高→低):
+//   1) .env 文件里有 DEEPSEEK_KEY=...   →  node server.mjs   (推荐,key 不进 ps/历史)
+//   2) 命令行: DEEPSEEK_KEY=sk-... node server.mjs   (自测用,会进 ps)
+//   3) systemd EnvironmentFile / pm2 env   (生产)
 // 部署:把 dist/ 和 server.mjs 放服务器,用 pm2/systemd 常驻,nginx 反代到域名
 
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+
+// 读本地 .env(若存在),不覆盖已设的环境变量;零依赖手写
+function loadDotEnv(file) {
+  if (!fs.existsSync(file)) return;
+  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+    if (!m || line.trim().startsWith("#")) continue;
+    const [, k, v] = m;
+    if (process.env[k] === undefined) {
+      process.env[k] = v.replace(/^["']|["']$/g, "");
+    }
+  }
+}
+loadDotEnv(path.resolve(".env"));
 
 const PORT = process.env.PORT || 4173;
 const DIST = path.resolve("dist");

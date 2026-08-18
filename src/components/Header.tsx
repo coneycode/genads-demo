@@ -114,12 +114,18 @@ export default function Header() {
               })}
             </div>
           </div>
-          <Field label={`Model（当前：${llmModel}）`}>
+          <Field label="Model（可下拉选 / 手输）">
             <input
+              list="llm-models"
               value={llmModel}
               onChange={(e) => setLlmConfig({ model: e.target.value })}
               className="w-48 px-2 py-1 rounded border border-slate-200"
             />
+            <datalist id="llm-models">
+              {(PROVIDERS.find((p) => p.baseURL === llmBaseURL)?.models ?? []).map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
           </Field>
           <Field label="Base URL">
             <input
@@ -128,33 +134,30 @@ export default function Header() {
               className="w-56 px-2 py-1 rounded border border-slate-200"
             />
           </Field>
-          <Field label={`API Key${llmApiKey ? "（已配置·隐藏）" : ""}`}>
+          <Field label={`API Key${llmApiKey ? "（已配置·隐藏）" : "（不填走服务器代理）"}`}>
             <input
               type="password"
               value={llmApiKey}
               onChange={(e) => setLlmConfig({ apiKey: e.target.value })}
               className="w-56 px-2 py-1 rounded border border-slate-200"
-              placeholder={llmApiKey ? "••••••••（如需更换直接输入新 key）" : "粘贴你的 Key（仅存内存，不进代码/不持久化）"}
+              placeholder={llmApiKey ? "••••••••（更换直接输入新 key）" : "留空=用服务器内置 key；填了=你自己的 key 直连"}
             />
           </Field>
-          <span className="text-[10px] text-slate-400">
-            默认预填 DeepSeek / deepseek-v4-flash。Key 不内置——请粘贴你自己的（静态前端藏不住密钥，内置=公开）。可点上方切换 Provider。
-          </span>
-          {engineMode === "llm" && (
-            <span
-              className={`text-[11px] px-2 py-1 rounded ${
-                llmError
-                  ? "bg-red-100 text-red-700"
-                  : "bg-green-100 text-green-700"
-              }`}
-            >
-              {llmError
-                ? `LLM 调用失败，已回退预设：${llmError}`
-                : llmApiKey
-                ? `LLM 已接通 · ${llmModel}（你的 key 直连）`
-                : `LLM 走服务器代理 · ${llmModel}（key 在服务器，不进浏览器）`}
-            </span>
-          )}
+          {engineMode === "llm" && (() => {
+            const proxiable = llmBaseURL.startsWith("https://api.deepseek.com");
+            const needOwnKey = !llmApiKey && !proxiable;
+            const cls = llmError
+              ? "bg-red-100 text-red-700"
+              : needOwnKey
+              ? "bg-amber-100 text-amber-700"
+              : "bg-green-100 text-green-700";
+            const txt = llmError
+              ? `调用失败·已回退预设：${llmError}`
+              : needOwnKey
+              ? `该 provider 需粘贴你自己的 key（服务器仅内置 DeepSeek）`
+              : `已连接 · ${llmModel}${llmApiKey ? "（你的 key）" : ""}`;
+            return <span className={`text-[11px] px-2 py-1 rounded ${cls}`}>{txt}</span>;
+          })()}
         </div>
       )}
     </header>
@@ -162,11 +165,11 @@ export default function Header() {
 }
 
 const PROVIDERS = [
-  { name: "DeepSeek", baseURL: "https://api.deepseek.com", model: "deepseek-v4-flash" },
-  { name: "OpenAI", baseURL: "https://api.openai.com/v1", model: "gpt-4o-mini" },
-  { name: "火山方舟", baseURL: "https://ark.cn-beijing.volces.com/api/v3", model: "doubao-1-5-lite-32k" },
-  { name: "通义", baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-turbo" },
-  { name: "智谱", baseURL: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash" },
+  { name: "DeepSeek", baseURL: "https://api.deepseek.com", model: "deepseek-v4-flash", models: ["deepseek-v4-flash", "deepseek-v4-pro"] },
+  { name: "OpenAI", baseURL: "https://api.openai.com/v1", model: "gpt-4o-mini", models: ["gpt-4o-mini", "gpt-4o"] },
+  { name: "火山方舟", baseURL: "https://ark.cn-beijing.volces.com/api/v3", model: "doubao-1-5-lite-32k", models: ["doubao-1-5-lite-32k", "doubao-1-5-pro-32k"] },
+  { name: "通义", baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-turbo", models: ["qwen-turbo", "qwen-plus"] },
+  { name: "智谱", baseURL: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash", models: ["glm-4-flash", "glm-4"] },
 ];
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

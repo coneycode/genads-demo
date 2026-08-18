@@ -47,9 +47,12 @@ npm run build
 ```bash
 npm run build
 # 服务器上(把 dist/ 和 server.mjs 放一起):
-DEEPSEEK_KEY=sk-你的key PORT=4173 node server.mjs
-# 常驻推荐 pm2:  pm2 start server.mjs --name genads --env DEEPSEEK_KEY=sk-...
-# nginx 反代到你的域名(可后加 HTTPS)
+#   方式A(推荐):建 .env 文件,key 不进 ps/历史
+echo "DEEPSEEK_KEY=sk-你的key" > .env && chmod 600 .env
+node server.mjs
+#   方式B:systemd EnvironmentFile=/etc/genads/env (chmod 600),生产常驻
+#   方式C:命令行 DEEPSEEK_KEY=sk-... node server.mjs (自测,会进 ps)
+# nginx 反代到你的域名(可后加 Let's Encrypt 上 HTTPS)
 ```
 
 - 默认 Provider/Model 仍预填 DeepSeek / `deepseek-v4-flash`。
