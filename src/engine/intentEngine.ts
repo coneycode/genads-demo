@@ -66,7 +66,7 @@ function layerOf(strength: number): IntentResult["layer"] {
 // 关键词兜底（未命中精确场景时）
 const PHONE_KW = ["手机", "iphone", "安卓", "旗舰", "游戏", "续航", "拍照", "电池", "屏幕"];
 const RENO_KW = ["装修", "全屋", "整装", "设计师", "装修公司", "小户型", "空间", "预算"];
-const EMO_KW = ["emo", "难过", "陪我", "聊聊", "心情", "分手", "累", "孤独"];
+const EMO_KW = ["emo", "难过", "不开心", "心情不好", "郁闷", "烦", "烦死", "陪我", "聊聊", "心情", "分手", "累", "孤独", "哭", "想哭", "崩溃", "焦虑", "压力"];
 
 function keywordFallback(query: string): IntentResult {
   const q = query.toLowerCase();

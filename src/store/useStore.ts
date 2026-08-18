@@ -5,14 +5,17 @@ import type {
   Advertiser,
   BidCandidate,
   EvalScore,
+  GateDecision,
   IntentResult,
   Metrics,
   Turn,
 } from "../engine/types";
 import { ADVERTISERS } from "../data/advertisers";
+import { exactScenario } from "../data/scenarios";
 import {
   PresetEngine,
   LLMEngine,
+  SWITCH_MSG,
   type IntentEngine,
 } from "../engine/intentEngine";
 import { rankBids } from "../engine/bidding";
@@ -189,16 +192,19 @@ export const useStore = create<State>((set, get) => ({
     }
     set({ llmError });
 
+    // 预设模式 + 非预设场景：预设处理不了任意输入，只回切换提示，不竞价/不出卡
+    const presetUnmatched = state.engineMode === "preset" && !exactScenario(text);
+
     // 2-3. 闸门
     const threshold = thresholdFromAggressiveness(state.aggressiveness);
-    const gate = decideGate(intent.strength, threshold);
+    const gate: GateDecision = presetUnmatched ? "none" : decideGate(intent.strength, threshold);
 
     // 3. 语义匹配度（发送时算一次，缓存在 turn；回溯重算复用，不重复调 LLM）
     const sameCategoryAds = state.advertisers.filter(
       (a) => a.category === intent.category
     );
     let matchMap: Record<string, number> = {};
-    {
+    if (!presetUnmatched) {
       const fb = new PresetEngine();
       try {
         const engine = usingLlm ? buildEngine(state) : fb;
@@ -225,7 +231,9 @@ export const useStore = create<State>((set, get) => ({
     // 7-8. AI 回复正文 + 是否出卡。回复由引擎生成：预设=罐头/切换提示，LLM=模型自然回答。
     const shown = gate === "trigger" && !!winner;
     let aiText: string;
-    {
+    if (presetUnmatched) {
+      aiText = SWITCH_MSG;
+    } else {
       const fb = new PresetEngine();
       try {
         const engine = usingLlm ? buildEngine(state) : fb;
