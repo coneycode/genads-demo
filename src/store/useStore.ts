@@ -91,7 +91,8 @@ let idc = 0;
 const nid = () => `m${++idc}`;
 
 function buildEngine(s: State): IntentEngine {
-  if (s.engineMode === "llm" && s.llmApiKey) {
+  // LLM 模式即用 LLMEngine：有用户 key→直连；无 key→走 /api/llm 代理(密钥在服务器)
+  if (s.engineMode === "llm") {
     return new LLMEngine({
       baseURL: s.llmBaseURL,
       apiKey: s.llmApiKey,
@@ -159,7 +160,8 @@ export const useStore = create<State>((set, get) => ({
 
   sendMessage: async (text: string) => {
     const state = get();
-    const usingLlm = state.engineMode === "llm" && !!state.llmApiKey;
+    // LLM 模式无论有无用户 key 都走 LLMEngine：有 key→直连；无 key→/api/llm 代理
+    const usingLlm = state.engineMode === "llm";
 
     // 1. 意图识别（LLM 失败 → 回退 preset，但把错误原因暴露到 llmError）
     let intent: IntentResult;
@@ -174,7 +176,6 @@ export const useStore = create<State>((set, get) => ({
         intent = await fb.analyze(text);
       }
     } else {
-      if (state.engineMode === "llm") llmError = "未配置 API Key，已回退预设";
       const engine = buildEngine(state);
       intent = await engine.analyze(text);
     }

@@ -121,6 +121,8 @@ export class PresetEngine implements IntentEngine {
 }
 
 // —— LLMEngine：OpenAI 兼容 ——
+// 有用户粘贴的 key → 直连 DeepSeek(浏览器侧)。
+// 无 key → 走同源 /api/llm 代理(服务器侧注入 key,密钥不进浏览器)。
 export class LLMEngine implements IntentEngine {
   name = "llm";
   private opts: { baseURL: string; apiKey: string; model: string };
@@ -128,29 +130,46 @@ export class LLMEngine implements IntentEngine {
     this.opts = opts;
   }
 
+  // 统一 chat/completions 调用。payload 不含 baseURL/key(由本方法决定走哪条路)。
+  private async call(payload: Record<string, unknown>): Promise<any> {
+    const { baseURL, apiKey } = this.opts;
+    if (apiKey) {
+      // 直连(用户自带 key)
+      const res = await fetch(baseURL.replace(/\/$/, "") + "/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`http ${res.status}`);
+      return res.json();
+    }
+    // 走服务器代理(无 key,密钥在服务器)
+    const res = await fetch("/api/llm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ baseURL, ...payload }),
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e?.error ? `proxy ${res.status}: ${e.error}` : `proxy http ${res.status}`);
+    }
+    return res.json();
+  }
+
   async analyze(query: string): Promise<IntentResult> {
-    const { baseURL, apiKey, model } = this.opts;
-    if (!apiKey) throw new Error("no api key");
-    const url = baseURL.replace(/\/$/, "") + "/chat/completions";
+    const { model } = this.opts;
     const sys = `你是一个意图识别器。对用户在AI对话助手里发的一句话，判断其商业意图强度。
 只输出一个 JSON，不要任何解释或代码块：{"strength": 0~1浮点, "category": "phone"|"renovation"|"none", "reason": "一句话中文解释"}
 规则：明确预算/型号/购买/决策对比=强(>=0.7)；泛咨询使用问题=弱(0.3~0.7)；纯情感/纯知识/纯工具任务=none(<0.3)。`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: sys },
-          { role: "user", content: query },
-        ],
-        temperature: 0.2,
-        // DeepSeek 文档：支持 JSON 模式，需 prompt 含 "json" 字样（已含）
-        response_format: { type: "json_object" },
-      }),
+    const data = await this.call({
+      model,
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: query },
+      ],
+      temperature: 0.2,
+      response_format: { type: "json_object" },
     });
-    if (!res.ok) throw new Error(`http ${res.status}`);
-    const data = await res.json();
     const content: string = data?.choices?.[0]?.message?.content ?? "";
     const parsed = extractJson(content);
     const strength = clampNum(Number(parsed.strength));
@@ -173,32 +192,24 @@ export class LLMEngine implements IntentEngine {
     intent: IntentResult,
     advertisers: Advertiser[]
   ): Promise<Record<string, number>> {
-    const { baseURL, apiKey, model } = this.opts;
-    if (!apiKey) throw new Error("no api key");
+    const { model } = this.opts;
     if (advertisers.length === 0) return {};
-    const url = baseURL.replace(/\/$/, "") + "/chat/completions";
     const list = advertisers
       .map((a) => `- id="${a.id}" 名称:${a.name} 文案:${a.adText} 关键词:${a.matchKeywords.join("/")}`)
       .join("\n");
     const sys = `你是广告匹配器。给定用户的一句话和若干商家，对每个商家判断其与用户意图的语义匹配度(0~1)。要按语义而非字面词(如"办公"≈"商务"、"拍照"、"续航")。只输出一个 JSON：{"matches":[{"id":"商家id","score":0.0~1.0},...]}，包含全部商家。`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: sys },
-          {
-            role: "user",
-            content: `用户原话：${query}\n意图：品类=${intent.category} 强度=${intent.strength}\n商家：\n${list}`,
-          },
-        ],
-        temperature: 0,
-        response_format: { type: "json_object" },
-      }),
+    const data = await this.call({
+      model,
+      messages: [
+        { role: "system", content: sys },
+        {
+          role: "user",
+          content: `用户原话：${query}\n意图：品类=${intent.category} 强度=${intent.strength}\n商家：\n${list}`,
+        },
+      ],
+      temperature: 0,
+      response_format: { type: "json_object" },
     });
-    if (!res.ok) throw new Error(`http ${res.status}`);
-    const data = await res.json();
     const content: string = data?.choices?.[0]?.message?.content ?? "";
     const parsed = extractMatches(content);
     const map: Record<string, number> = {};
@@ -216,30 +227,22 @@ export class LLMEngine implements IntentEngine {
     winner: Advertiser | null,
     gate: GateDecision
   ): Promise<string> {
-    const { baseURL, apiKey, model } = this.opts;
-    if (!apiKey) throw new Error("no api key");
-    const url = baseURL.replace(/\/$/, "") + "/chat/completions";
+    const { model } = this.opts;
     const sys =
       "你是 AI 对话助手。用一两句中文自然回答用户。若用户在选购，可顺带引出最贴合的选项，但别堆砌。不要复读商家文案原文。";
     let user = `用户说：${query}`;
     if (winner && gate !== "none") {
       user += `\n（系统已为你匹配选项：${winner.name}——${winner.adText}。可自然地引出，但用自己的话。）`;
     }
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: sys },
-          { role: "user", content: user },
-        ],
-        temperature: 0.7,
-        max_tokens: 200,
-      }),
+    const data = await this.call({
+      model,
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: user },
+      ],
+      temperature: 0.7,
+      max_tokens: 200,
     });
-    if (!res.ok) throw new Error(`http ${res.status}`);
-    const data = await res.json();
     const text: string = data?.choices?.[0]?.message?.content ?? "";
     return text.trim() || genCannedReply(intent, gate, winner);
   }

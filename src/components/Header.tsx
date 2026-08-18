@@ -143,18 +143,16 @@ export default function Header() {
           {engineMode === "llm" && (
             <span
               className={`text-[11px] px-2 py-1 rounded ${
-                llmApiKey
-                  ? llmError
-                    ? "bg-red-100 text-red-700"
-                    : "bg-green-100 text-green-700"
-                  : "bg-amber-100 text-amber-700"
+                llmError
+                  ? "bg-red-100 text-red-700"
+                  : "bg-green-100 text-green-700"
               }`}
             >
-              {!llmApiKey
-                ? "未配置 Key（发消息会用预设引擎）"
-                : llmError
+              {llmError
                 ? `LLM 调用失败，已回退预设：${llmError}`
-                : `LLM 已接通 · ${llmModel}（发任意消息走真实模型）`}
+                : llmApiKey
+                ? `LLM 已接通 · ${llmModel}（你的 key 直连）`
+                : `LLM 走服务器代理 · ${llmModel}（key 在服务器，不进浏览器）`}
             </span>
           )}
         </div>

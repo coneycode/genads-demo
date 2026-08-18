@@ -39,6 +39,23 @@ npm run build
 # 然后把 dist 推到 gh-pages 分支
 ```
 
+## 自托管(自有服务器,推荐:密钥不进浏览器)
+
+`server.mjs` 用 Node 内置模块,零依赖,同时托管静态 `dist/` + `/api/llm` 代理。
+密钥 `DEEPSEEK_KEY` 只存在服务器环境变量里,前端无 key 时走代理,DeepSeek 由服务器调用——**密钥永不进入浏览器 bundle**。
+
+```bash
+npm run build
+# 服务器上(把 dist/ 和 server.mjs 放一起):
+DEEPSEEK_KEY=sk-你的key PORT=4173 node server.mjs
+# 常驻推荐 pm2:  pm2 start server.mjs --name genads --env DEEPSEEK_KEY=sk-...
+# nginx 反代到你的域名(可后加 HTTPS)
+```
+
+- 默认 Provider/Model 仍预填 DeepSeek / `deepseek-v4-flash`。
+- 无 key → 走 `/api/llm`(服务器注入 key,白名单仅 DeepSeek)。
+- 想换 provider(OpenAI/火山方舟等)→ 在配置面板粘贴该 provider 的 key,前端直连(不走代理)。
+
 ## 设计文档
 
 - 思路与话术：`~/Documents/生成式广告Demo方案.md`
