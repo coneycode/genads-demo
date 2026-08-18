@@ -8,27 +8,45 @@ const GATE_STYLE: Record<GateDecision, { label: string; cls: string }> = {
   none: { label: "克制·不触发", cls: "bg-slate-100 text-slate-500 border-slate-300" },
 };
 
-export default function GateStage({ intent }: { intent: IntentResult | null }) {
+export default function GateStage({
+  intent,
+  gate,
+}: {
+  intent: IntentResult | null;
+  gate: GateDecision;
+}) {
   const aggressiveness = useStore((s) => s.aggressiveness);
+  // 阈值线随滑块实时移动（显示当前策略）；但徽章反映该 turn 实际发生的闸门（不回溯）
   const threshold = thresholdFromAggressiveness(aggressiveness);
-
-  let gate: GateDecision = "none";
-  if (intent) {
-    if (intent.strength >= threshold) gate = "trigger";
-    else if (intent.strength >= threshold - 0.2) gate = "soft";
-  }
   const gs = GATE_STYLE[gate];
 
   const strength = intent?.strength ?? 0;
   const softLine = Math.max(0, threshold - 0.2);
+  // 当前策略下"如果现在发这条"会不会触发（仅供目测，与徽章可能不同）
+  const wouldNow: GateDecision =
+    intent == null
+      ? "none"
+      : intent.strength >= threshold
+      ? "trigger"
+      : intent.strength >= threshold - 0.2
+      ? "soft"
+      : "none";
+  const differs = wouldNow !== gate;
 
   return (
     <div data-tour="gate-stage" className="rounded-lg border border-slate-200 p-3 bg-white">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold text-slate-500">② 触发闸门</span>
-        <span className={`text-[10px] px-2 py-0.5 rounded-full border ${gs.cls}`}>
-          {gs.label}
-        </span>
+        <div className="flex items-center gap-1.5">
+          <span className={`text-[10px] px-2 py-0.5 rounded-full border ${gs.cls}`}>
+            {gs.label}
+          </span>
+          {differs && intent && (
+            <span className="text-[9px] text-slate-400" title="当前策略下若重发此条会变">
+              → 重发会{wouldNow === "trigger" ? "触发" : wouldNow === "soft" ? "软引导" : "克制"}
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="relative h-10 mb-1">

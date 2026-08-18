@@ -11,7 +11,7 @@ export default function EnginePanel({ turn }: { turn: Turn | null }) {
         引擎透视 · 你的认知视角
       </div>
       <IntentStage intent={turn?.intent ?? null} />
-      <GateStage intent={turn?.intent ?? null} />
+      <GateStage intent={turn?.intent ?? null} gate={turn?.gate ?? "none"} />
       <BiddingStage turn={turn} />
       <EvalStage evalScore={turn?.eval ?? null} />
     </div>

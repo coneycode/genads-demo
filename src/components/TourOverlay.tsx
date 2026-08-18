@@ -92,8 +92,9 @@ export default function TourOverlay() {
       case "send-reno":
         await sendMessage("我家90平想做全屋装修，预算15万够吗");
         break;
-      case "aggr-max":
+      case "aggr-max-emo":
         setAggressiveness(1.0);
+        await sendMessage("我今天好emo，想找人聊聊");
         break;
       case "bid-renohard-max":
         setBid("reno_hard", 40);

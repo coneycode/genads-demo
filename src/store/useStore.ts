@@ -101,49 +101,37 @@ function buildEngine(s: State): IntentEngine {
   return new PresetEngine();
 }
 
-// 回溯重算：按当前 aggressiveness + advertisers，把所有历史 ai-turn 重新判一遍。
-// 滑块/出价都当"策略旋钮"——拖动即看到"若一直如此会怎样"的反事实。
-function recomputeAll(
+// 仅重排"当前 turn"的竞价（出价变化时用）。保留该 turn 的闸门/matchMap/回复正文，
+// 只用新出价重算 candidates/winner/showCard/eval。不动历史、不动闸门——
+// 策略(激进度)只影响未来消息，不回溯重写历史。
+function recomputeCurrentTurn(
   msgs: ChatMessage[],
-  aggressiveness: number,
   advertisers: Advertiser[]
 ): { msgs: ChatMessage[]; currentTurn: Turn | null } {
-  const threshold = thresholdFromAggressiveness(aggressiveness);
   let currentTurn: Turn | null = null;
-  const out = msgs.map((m) => {
-    if (m.role !== "ai" || !m.turn) return m;
+  const out = [...msgs];
+  for (let i = out.length - 1; i >= 0; i--) {
+    const m = out[i];
+    if (m.role !== "ai" || !m.turn) continue;
     const prev = m.turn;
-    const gate = decideGate(prev.intent.strength, threshold);
-    let candidates: BidCandidate[] = [];
-    let winner: Advertiser | null = null;
-    if (gate !== "none") {
-      // 回溯重算：复用该 turn 缓存的语义 matchMap（不重复调 LLM）
-      candidates = rankBids(prev.userText, prev.intent, advertisers, prev.matchMap);
-      winner = candidates[0]?.advertiser ?? null;
+    if (prev.gate === "none") {
+      currentTurn = prev;
+      break;
     }
-    const trustCost = computeTrustCost(gate, prev.intent.strength);
-    const shown = gate === "trigger" && !!winner;
-    // 回复正文沿用发送时缓存（不重复调 LLM；商品卡随 gate 出现/消失即可）
-    const aiText = prev.aiText;
+    const candidates = rankBids(prev.userText, prev.intent, advertisers, prev.matchMap);
+    const winner = candidates[0]?.advertiser ?? null;
+    const shown = prev.gate === "trigger" && !!winner;
     const evalScore = evaluate(
       prev.intent,
-      gate,
+      prev.gate,
       winner ? candidates[0]?.matchScore ?? null : null,
-      trustCost
+      prev.trustCost
     );
-    const newTurn: Turn = {
-      ...prev,
-      gate,
-      candidates,
-      winner,
-      aiText,
-      showCard: shown,
-      trustCost,
-      eval: evalScore,
-    };
+    const newTurn: Turn = { ...prev, candidates, winner, showCard: shown, eval: evalScore };
     currentTurn = newTurn;
-    return { ...m, text: aiText, turn: newTurn };
-  });
+    out[i] = { ...m, turn: newTurn };
+    break;
+  }
   return { msgs: out, currentTurn };
 }
 
@@ -289,22 +277,9 @@ export const useStore = create<State>((set, get) => ({
   },
 
   setAggressiveness: (v) => {
-    const state = get();
-    // 回溯：所有历史 ai-turn 按新激进度重判
-    const { msgs, currentTurn } = recomputeAll(state.messages, v, state.advertisers);
-    const { metrics, cumulativeTrustCost, adShownCount, turnCount, revenueSeries, retentionSeries } =
-      computeMetricsFromTurns(turnsOf(msgs));
-    set({
-      aggressiveness: v,
-      messages: msgs,
-      currentTurn: currentTurn ?? state.currentTurn,
-      metrics,
-      cumulativeTrustCost,
-      adShownCount,
-      turnCount,
-      revenueSeries,
-      retentionSeries,
-    });
+    // 非回溯：激进度只影响"之后"发的新消息，不改写历史。
+    // 拖滑块仅更新阈值（GateStage 阈值线实时移动），要看新策略效果需发新消息。
+    set({ aggressiveness: v });
   },
 
   setBid: (advertiserId, bid) => {
@@ -312,8 +287,8 @@ export const useStore = create<State>((set, get) => ({
     const advertisers = state.advertisers.map((a) =>
       a.id === advertiserId ? { ...a, bid } : a
     );
-    // 回溯：所有历史 ai-turn 按新出价重算竞价与中选
-    const { msgs, currentTurn } = recomputeAll(state.messages, state.aggressiveness, advertisers);
+    // 仅重排当前 turn 的竞价（保留其闸门/matchMap/回复），看中选是否易主
+    const { msgs, currentTurn } = recomputeCurrentTurn(state.messages, advertisers);
     const { metrics, cumulativeTrustCost, adShownCount, turnCount, revenueSeries, retentionSeries } =
       computeMetricsFromTurns(turnsOf(msgs));
     set({

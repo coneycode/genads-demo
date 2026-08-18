@@ -16,7 +16,7 @@ export type TourActionKey =
   | "send-phone"
   | "send-emo"
   | "send-reno"
-  | "aggr-max"
+  | "aggr-max-emo"
   | "bid-renohard-max";
 
 export interface TourStep {
@@ -57,10 +57,10 @@ export const TOUR_STEPS: TourStep[] = [
   {
     act: 2,
     title: "第二幕 · 贪婪是有代价的",
-    body: "点「下一步」自动把「变现激进度」拖到最激进。看右栏：越过阈值后护栏指标接连破线、一票否决；之前的 emo 消息也会回溯长出鲜花卡。",
+    body: "点「下一步」自动把激进度拖到最激进，并重发一条 emo。看这条新消息：原本克制的情感场景现在弹出了鲜花卡，右栏护栏指标破线、一票否决。",
     target: "header-slider",
     cta: "下一步",
-    action: "aggr-max",
+    action: "aggr-max-emo",
   },
   {
     act: 2,
