@@ -5,23 +5,17 @@ import { SCENARIOS } from "../data/scenarios";
 import MessageBubble from "./MessageBubble";
 
 export default function ChatPanel() {
-  const { messages, sendMessage } = useStore();
+  const { messages, sendMessage, thinking } = useStore();
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length]);
+  }, [messages.length, thinking]);
 
   const send = async (text: string) => {
-    if (!text.trim() || busy) return;
-    setBusy(true);
-    try {
-      await sendMessage(text.trim());
-    } finally {
-      setBusy(false);
-    }
+    if (!text.trim() || thinking) return;
+    await sendMessage(text.trim());
   };
 
   return (
@@ -39,6 +33,7 @@ export default function ChatPanel() {
         {messages.map((m) => (
           <MessageBubble key={m.id} role={m.role} text={m.text} turn={m.turn} />
         ))}
+        {thinking && <TypingBubble />}
         <div ref={endRef} />
       </div>
 
@@ -68,7 +63,7 @@ export default function ChatPanel() {
                 key={s.text}
                 data-tour={dataKey}
                 onClick={() => send(s.text)}
-                disabled={busy}
+                disabled={thinking}
                 className="text-[11px] px-2 py-1 rounded-full border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-300 text-slate-600 disabled:opacity-50"
               >
                 <span className="mr-1 text-slate-400">#{tag}</span>
@@ -93,12 +88,25 @@ export default function ChatPanel() {
           />
           <button
             type="submit"
-            disabled={busy}
+            disabled={thinking}
             className="px-3 rounded-lg bg-blue-600 text-white disabled:opacity-50"
           >
             <Send size={16} />
           </button>
         </form>
+      </div>
+    </div>
+  );
+}
+
+function TypingBubble() {
+  return (
+    <div className="flex justify-start mb-3">
+      <div className="bg-white border border-slate-200 rounded-2xl rounded-bl-sm px-3.5 py-2.5 flex items-center gap-1">
+        <span className="text-[10px] text-slate-400 mr-1">AI 思考中</span>
+        <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:-0.3s]" />
+        <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:-0.15s]" />
+        <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" />
       </div>
     </div>
   );

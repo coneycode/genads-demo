@@ -50,6 +50,7 @@ interface State {
   llmApiKey: string;
   llmModel: string;
   llmError: string | null; // 真实 LLM 调用失败原因（null=未用或成功）
+  thinking: boolean; // AI 正在生成回复（打字指示器）
 
   advertisers: Advertiser[]; // 含可变 bid
   messages: ChatMessage[];
@@ -153,6 +154,7 @@ export const useStore = create<State>((set, get) => ({
   turnCount: 0,
   revenueSeries: [],
   retentionSeries: [],
+  thinking: false,
 
   tourActive: false,
   tourStep: 0,
@@ -162,51 +164,36 @@ export const useStore = create<State>((set, get) => ({
     const state = get();
     // LLM 模式无论有无用户 key 都走 LLMEngine：有 key→直连；无 key→/api/llm 代理
     const usingLlm = state.engineMode === "llm";
+    set({ thinking: true });
 
-    // 1. 意图识别（LLM 失败 → 回退 preset，但把错误原因暴露到 llmError）
+    // 1. 意图 + 语义匹配（合并为一次调用，省一次往返；LLM 失败→回退 preset 关键词）
     let intent: IntentResult;
-    let llmError: string | null = null;
-    if (usingLlm) {
-      try {
-        const engine = buildEngine(state);
-        intent = await engine.analyze(text);
-      } catch (e) {
-        llmError = e instanceof Error ? e.message : String(e);
-        const fb = new PresetEngine();
-        intent = await fb.analyze(text);
-      }
-    } else {
-      const engine = buildEngine(state);
-      intent = await engine.analyze(text);
-    }
-    set({ llmError });
-
-    // 预设模式 + 非预设场景：预设处理不了任意输入，只回切换提示，不竞价/不出卡
-    const presetUnmatched = state.engineMode === "preset" && !exactScenario(text);
-
-    // 2-3. 闸门
-    const threshold = thresholdFromAggressiveness(state.aggressiveness);
-    const gate: GateDecision = presetUnmatched ? "none" : decideGate(intent.strength, threshold);
-
-    // 3. 语义匹配度（发送时算一次，缓存在 turn；回溯重算复用，不重复调 LLM）
-    const sameCategoryAds = state.advertisers.filter(
-      (a) => a.category === intent.category
-    );
     let matchMap: Record<string, number> = {};
-    if (!presetUnmatched) {
+    let llmError: string | null = null;
+    {
       const fb = new PresetEngine();
       try {
         const engine = usingLlm ? buildEngine(state) : fb;
-        matchMap = await engine.scoreMatches(text, intent, sameCategoryAds);
+        const r = await engine.analyzeAndMatch(text, state.advertisers);
+        intent = r.intent;
+        matchMap = r.matchMap;
       } catch (e) {
-        if (usingLlm)
-          llmError = (llmError ? llmError + "；" : "") + `匹配度:${e instanceof Error ? e.message : e}`;
-        matchMap = await fb.scoreMatches(text, intent, sameCategoryAds);
+        llmError = e instanceof Error ? e.message : String(e);
+        const r = await fb.analyzeAndMatch(text, state.advertisers);
+        intent = r.intent;
+        matchMap = r.matchMap;
       }
       set({ llmError });
     }
 
-    // 4. 竞价（仅同品类，gate !== none 才进入；用语义 matchMap）
+    // 预设模式 + 非预设场景：预设处理不了任意输入，只回切换提示，不竞价/不出卡
+    const presetUnmatched = state.engineMode === "preset" && !exactScenario(text);
+
+    // 2. 闸门
+    const threshold = thresholdFromAggressiveness(state.aggressiveness);
+    const gate: GateDecision = presetUnmatched ? "none" : decideGate(intent.strength, threshold);
+
+    // 3. 竞价（仅同品类，gate !== none 才进入；用语义 matchMap）
     let candidates: BidCandidate[] = [];
     let winner: Advertiser | null = null;
     if (gate !== "none") {
@@ -274,6 +261,7 @@ export const useStore = create<State>((set, get) => ({
       turnCount,
       revenueSeries,
       retentionSeries,
+      thinking: false,
     });
   },
 
@@ -325,6 +313,7 @@ export const useStore = create<State>((set, get) => ({
       turnCount: 0,
       revenueSeries: [],
       retentionSeries: [],
+      thinking: false,
       llmError: null,
       tourActive: false,
       tourStep: 0,
