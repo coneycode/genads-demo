@@ -237,7 +237,10 @@ export class LLMEngine implements IntentEngine {
     // 仅 trigger（出卡）时才让回复模型知道中选产品并点名；soft 不出卡，
     // 不透露具体商家，避免"文字点了名却没有卡片"的错位
     if (winner && gate === "trigger") {
-      user += `\n（系统已为你匹配选项：${winner.name}——${winner.adText}。可自然地引出，但用自己的话。）`;
+      user += `\n\n【系统已为你匹配的唯一推荐选项】：${winner.name}——${winner.adText}。
+要求：你只能围绕这个匹配选项来回应用户，用一两句自然的话引出它的卖点/适合场景。
+严禁推荐或提及其他任何品牌、型号（如红米/真我/iPhone/小米等池外产品）——只能讲"${winner.name}"。
+若用户嫌贵/想要更便宜，可说明这个选项的性价比或定位，但不要承诺不存在的东西。`;
     }
     msgs.push({ role: "user", content: user });
     const data = await this.call({
