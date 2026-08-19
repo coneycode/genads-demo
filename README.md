@@ -71,5 +71,5 @@ nginx 反代到你的域名（可后加 Let's Encrypt 上 HTTPS）。
 
 ## 设计文档
 
-- 思路与话术：`~/Documents/生成式广告Demo方案.md`
-- 实现规格：`~/Documents/生成式广告Demo_实现规格书.md`
+- 思路与话术：[`docs/设计方案.md`](docs/设计方案.md)
+- 实现规格：[`docs/实现规格书.md`](docs/实现规格书.md)
