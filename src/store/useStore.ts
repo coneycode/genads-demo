@@ -166,6 +166,12 @@ export const useStore = create<State>((set, get) => ({
     const usingLlm = state.engineMode === "llm";
     set({ thinking: true });
 
+    // 近期对话历史(多轮上下文),让模型理解追问(如"还是有点贵"=要更便宜)
+    const history = state.messages
+      .slice(-6)
+      .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.text })) as
+      { role: "user" | "assistant"; content: string }[];
+
     // 1. 意图 + 语义匹配（合并为一次调用，省一次往返；LLM 失败→回退 preset 关键词）
     let intent: IntentResult;
     let matchMap: Record<string, number> = {};
@@ -174,12 +180,12 @@ export const useStore = create<State>((set, get) => ({
       const fb = new PresetEngine();
       try {
         const engine = usingLlm ? buildEngine(state) : fb;
-        const r = await engine.analyzeAndMatch(text, state.advertisers);
+        const r = await engine.analyzeAndMatch(text, state.advertisers, history);
         intent = r.intent;
         matchMap = r.matchMap;
       } catch (e) {
         llmError = e instanceof Error ? e.message : String(e);
-        const r = await fb.analyzeAndMatch(text, state.advertisers);
+        const r = await fb.analyzeAndMatch(text, state.advertisers, history);
         intent = r.intent;
         matchMap = r.matchMap;
       }
@@ -213,12 +219,12 @@ export const useStore = create<State>((set, get) => ({
       const fb = new PresetEngine();
       try {
         const engine = usingLlm ? buildEngine(state) : fb;
-        aiText = await engine.reply(text, intent, winner, gate);
+        aiText = await engine.reply(text, intent, winner, gate, history);
       } catch (e) {
         if (usingLlm)
           llmError = (llmError ? llmError + "；" : "") + `回复:${e instanceof Error ? e.message : e}`;
         set({ llmError });
-        aiText = await fb.reply(text, intent, winner, gate);
+        aiText = await fb.reply(text, intent, winner, gate, history);
       }
     }
     const showCard = shown;

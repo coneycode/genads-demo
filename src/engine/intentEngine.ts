@@ -9,17 +9,20 @@ export const SWITCH_MSG =
 
 export interface IntentEngine {
   name: string;
-  // 一次返回意图 + 各商家语义匹配度。预设=关键词(即时);LLM=单次调用(意图+匹配合并,省一次往返)。
+  // 一次返回意图 + 各商家语义匹配度。history=近期对话(多轮上下文),让模型理解追问(如"还是有点贵"=要更便宜)。
+  // 预设=关键词(即时,忽略 history)；LLM=单次调用(意图+匹配合并,省一次往返)。
   analyzeAndMatch(
     query: string,
-    advertisers: Advertiser[]
+    advertisers: Advertiser[],
+    history?: { role: "user" | "assistant"; content: string }[]
   ): Promise<{ intent: IntentResult; matchMap: Record<string, number> }>;
-  // 生成 AI 回复正文。预设=罐头/切换提示；LLM=模型自然回答。
+  // 生成 AI 回复正文。history 让回复贴合上下文。
   reply(
     query: string,
     intent: IntentResult,
     winner: Advertiser | null,
-    gate: GateDecision
+    gate: GateDecision,
+    history?: { role: "user" | "assistant"; content: string }[]
   ): Promise<string>;
 }
 
@@ -84,7 +87,8 @@ export class PresetEngine implements IntentEngine {
   name = "preset";
   async analyzeAndMatch(
     query: string,
-    advertisers: Advertiser[]
+    advertisers: Advertiser[],
+    _history?: { role: "user" | "assistant"; content: string }[]
   ): Promise<{ intent: IntentResult; matchMap: Record<string, number> }> {
     const exact = exactScenario(query);
     const intent: IntentResult = exact
@@ -105,7 +109,8 @@ export class PresetEngine implements IntentEngine {
     query: string,
     intent: IntentResult,
     winner: Advertiser | null,
-    gate: GateDecision
+    gate: GateDecision,
+    _history?: { role: "user" | "assistant"; content: string }[]
   ): Promise<string> {
     // 命中预设场景 → 罐头回复（tour 依赖）；否则老实提示切到 LLM
     if (exactScenario(query)) return genCannedReply(intent, gate, winner);
@@ -152,30 +157,38 @@ export class LLMEngine implements IntentEngine {
     return res.json();
   }
 
-  // 一次调用同时判定意图 + 对各商家打语义匹配分（省一次往返）。
+  // 一次调用同时判定意图 + 对各商家打语义匹配分（省一次往返）。history 提供多轮上下文。
   async analyzeAndMatch(
     query: string,
-    advertisers: Advertiser[]
+    advertisers: Advertiser[],
+    history?: { role: "user" | "assistant"; content: string }[]
   ): Promise<{ intent: IntentResult; matchMap: Record<string, number> }> {
     const { model } = this.opts;
     const list = advertisers
       .map((a) => `- id="${a.id}" 品类:${a.category} 名称:${a.name} 文案:${a.adText} 关键词:${a.matchKeywords.join("/")}`)
       .join("\n");
-    const sys = `你是意图识别+广告匹配器。对用户的一句话同时做两件事:
-1) 判断商业意图: strength(0~1浮点)、category("phone"|"renovation"|"none")、reason(一句中文)
+    const sys = `你是意图识别+广告匹配器。结合对话上下文,对用户【最新一条】消息同时做两件事:
+1) 判断其商业意图: strength(0~1浮点)、category("phone"|"renovation"|"none")、reason(一句中文)
 2) 对下列每个商家,判断其与用户意图的语义匹配度 score(0~1)
 只输出一个 JSON,不要解释或代码块: {"strength":0~1,"category":"...","reason":"...","matches":[{"id":"商家id","score":0~1},...]}
 规则:
-- 强(>=0.7):任何明确的购买/推荐/选购请求(含"推荐""买""想换""预算""型号对比"等),即便没给具体预算或型号。
+- 强(>=0.7):任何明确的购买/推荐/选购请求(含"推荐""买""想换""预算""型号对比""还是有点贵/能不能便宜点"等追问),即便没给具体预算或型号。
 - 弱(0.3~0.7):泛使用咨询(如"屏幕变暗怎么回事"),不是要买,是问用法/知识。
 - none(<0.3):纯情感/纯知识/纯工具(emo、光合作用、写辞职信等)。
 - 匹配按语义而非字面词(如"办公"≈"商务"、"拍照"、"续航")。matches 须含全部商家。`;
+    const msgs: { role: "system" | "user" | "assistant"; content: string }[] = [
+      { role: "system", content: sys },
+    ];
+    // 注入近期对话历史,让模型理解追问(如"还是有点贵"=要更便宜的)
+    if (history && history.length) {
+      for (const h of history.slice(-6)) {
+        msgs.push({ role: h.role, content: h.content });
+      }
+    }
+    msgs.push({ role: "user", content: `【最新一条消息】${query}\n商家：\n${list}` });
     const data = await this.call({
       model,
-      messages: [
-        { role: "system", content: sys },
-        { role: "user", content: `用户说：${query}\n商家：\n${list}` },
-      ],
+      messages: msgs,
       temperature: 0,
       response_format: { type: "json_object" },
     });
@@ -206,23 +219,30 @@ export class LLMEngine implements IntentEngine {
     query: string,
     intent: IntentResult,
     winner: Advertiser | null,
-    gate: GateDecision
+    gate: GateDecision,
+    history?: { role: "user" | "assistant"; content: string }[]
   ): Promise<string> {
     const { model } = this.opts;
     const sys =
-      "你是 AI 对话助手。用一两句中文自然回答用户。若用户在选购，可顺带引出最贴合的选项，但别堆砌。不要复读商家文案原文。";
-    let user = `用户说：${query}`;
+      "你是 AI 对话助手。结合对话上下文，用一两句中文自然回答用户【最新一条】消息。若用户在选购，可顺带引出最贴合的选项，但别堆砌。不要复读商家文案原文。";
+    const msgs: { role: "system" | "user" | "assistant"; content: string }[] = [
+      { role: "system", content: sys },
+    ];
+    if (history && history.length) {
+      for (const h of history.slice(-6)) {
+        msgs.push({ role: h.role, content: h.content });
+      }
+    }
+    let user = `【最新一条消息】${query}`;
     // 仅 trigger（出卡）时才让回复模型知道中选产品并点名；soft 不出卡，
     // 不透露具体商家，避免"文字点了名却没有卡片"的错位
     if (winner && gate === "trigger") {
       user += `\n（系统已为你匹配选项：${winner.name}——${winner.adText}。可自然地引出，但用自己的话。）`;
     }
+    msgs.push({ role: "user", content: user });
     const data = await this.call({
       model,
-      messages: [
-        { role: "system", content: sys },
-        { role: "user", content: user },
-      ],
+      messages: msgs,
       temperature: 0.7,
       max_tokens: 200,
     });
