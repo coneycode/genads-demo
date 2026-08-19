@@ -6,12 +6,21 @@ import type {
   BidCandidate,
   EvalScore,
   GateDecision,
+  IntentResult,
   Metrics,
   Turn,
 } from "../engine/types";
 import { ADVERTISERS } from "../data/advertisers";
 import { exactScenario } from "../data/scenarios";
-import { PresetEngine, SWITCH_MSG } from "../engine/intentEngine";
+import {
+  PresetEngine,
+  LLMEngine,
+  SWITCH_MSG,
+  OUT_OF_SCOPE_MSG,
+  isOversizeOrInjection,
+  isInDomain,
+  type IntentEngine,
+} from "../engine/intentEngine";
 import { rankBids } from "../engine/bidding";
 import {
   computeMetricsFromTurns,
@@ -20,6 +29,9 @@ import {
   thresholdFromAggressiveness,
 } from "../engine/trustModel";
 import { evaluate } from "../engine/evaluator";
+import { reportTurn } from "../lib/reporter";
+
+type EngineMode = "preset" | "llm";
 
 interface ChatMessage {
   id: string;
@@ -37,6 +49,11 @@ function turnsOf(msgs: ChatMessage[]): Turn[] {
 
 interface State {
   aggressiveness: number;
+  engineMode: EngineMode;
+  llmBaseURL: string;
+  llmApiKey: string;
+  llmModel: string;
+  llmError: string | null; // 真实 LLM 调用/校验失败原因（null=未用或成功）
   thinking: boolean; // AI 正在生成回复（打字指示器）
 
   advertisers: Advertiser[]; // 含可变 bid
@@ -57,6 +74,8 @@ interface State {
   sendMessage: (text: string) => Promise<void>;
   setAggressiveness: (v: number) => void;
   setBid: (advertiserId: string, bid: number) => void;
+  setEngineMode: (m: EngineMode) => void;
+  setLlmConfig: (k: { baseURL?: string; apiKey?: string; model?: string }) => void;
   reset: () => void;
   startTour: () => void;
   nextTourStep: () => void;
@@ -75,6 +94,18 @@ const INITIAL_METRICS: Metrics = {
 
 let idc = 0;
 const nid = () => `m${++idc}`;
+
+function buildEngine(s: State): IntentEngine {
+  // LLM 模式即用 LLMEngine：有用户 key→直连；无 key→走 /api/llm 代理(密钥在服务器)
+  if (s.engineMode === "llm") {
+    return new LLMEngine({
+      baseURL: s.llmBaseURL,
+      apiKey: s.llmApiKey,
+      model: s.llmModel,
+    });
+  }
+  return new PresetEngine();
+}
 
 // 仅重排"当前 turn"的竞价（出价变化时用）。保留该 turn 的闸门/matchMap/回复正文，
 // 只用新出价重算 candidates/winner/showCard/eval。不动历史、不动闸门——
@@ -112,6 +143,11 @@ function recomputeCurrentTurn(
 
 export const useStore = create<State>((set, get) => ({
   aggressiveness: 0.25,
+  engineMode: "preset",
+  llmBaseURL: "https://api.deepseek.com",
+  llmApiKey: "",
+  llmModel: "deepseek-v4-flash",
+  llmError: null,
 
   advertisers: ADVERTISERS.map((a) => ({ ...a })),
   messages: [],
@@ -130,7 +166,7 @@ export const useStore = create<State>((set, get) => ({
 
   sendMessage: async (text: string) => {
     const state = get();
-    // 仅预设引擎：不接真实大模型，非预设场景统一回演示提示，不竞价/不出卡。
+    const usingLlm = state.engineMode === "llm";
     set({ thinking: true });
 
     // 近期对话历史(多轮上下文),让模型理解追问(如"还是有点贵"=要更便宜)
@@ -139,19 +175,63 @@ export const useStore = create<State>((set, get) => ({
       .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.text })) as
       { role: "user" | "assistant"; content: string }[];
 
-    const engine = new PresetEngine();
+    let llmError: string | null = null;
+    let fellBack = false; // 是否发生了 fail-closed 回退（埋点用）
+    const fb = new PresetEngine();
 
-    // 1. 意图 + 语义匹配（预设=关键词即时判定）
-    const { intent, matchMap } = await engine.analyzeAndMatch(text, state.advertisers, history);
+    // 0. 入口硬拦(确定性,不调 LLM):超长 / 疑似注入 → 统一越界文案,不出卡
+    const entryBlocked = usingLlm && isOversizeOrInjection(text);
 
-    // 预设模式 + 非预设场景：只回演示提示，不竞价/不出卡
-    const presetUnmatched = !exactScenario(text);
+    // 1. 意图 + 语义匹配。入口拦截时合成一个 none 意图；否则 LLM 模式调 LLMEngine(硬化提示词),失败→回退 PresetEngine 关键词
+    let intent: IntentResult;
+    let matchMap: Record<string, number> = {};
+    if (entryBlocked) {
+      intent = { strength: 0.2, layer: "none", category: "none", reason: "入口拦截:超长或疑似注入" };
+    } else {
+      try {
+        const engine = usingLlm ? buildEngine(state) : fb;
+        const r = await engine.analyzeAndMatch(text, state.advertisers, history);
+        intent = r.intent;
+        matchMap = r.matchMap;
+      } catch (e) {
+        llmError = e instanceof Error ? e.message : String(e);
+        fellBack = true;
+        const r = await fb.analyzeAndMatch(text, state.advertisers, history);
+        intent = r.intent;
+        matchMap = r.matchMap;
+      }
+    }
 
-    // 2. 闸门
+    // 2. 拦阻判定(被拦→不出卡):
+    //    入口拦截 / LLM 模式域外(非 phone·reno·情感陪伴 且非预设) → 越界文案；
+    //    预设模式非精确预设 → SWITCH_MSG
+    let blocked = false;
+    let blockedMsg = SWITCH_MSG;
+    if (entryBlocked) {
+      blocked = true;
+      blockedMsg = OUT_OF_SCOPE_MSG;
+    } else if (usingLlm) {
+      if (!isInDomain(text, intent)) {
+        blocked = true;
+        blockedMsg = OUT_OF_SCOPE_MSG;
+      }
+    } else {
+      if (!exactScenario(text)) {
+        blocked = true;
+        blockedMsg = SWITCH_MSG;
+      }
+    }
+
+    // 2.5 抑制推荐(LLM 模式·域内但不应出卡):用户否定/嫌贵上一条且池中无更合适选项
+    //     → 不出卡,用 LLM 的判断说明当回复(展示"收手"的判断过程)。省一次调用。
+    const DEFAULT_SUPPRESS_MSG = "现有广告主中没有更合适的选项，因此本轮不再推荐。";
+    const suppressAd = usingLlm && intent.shouldRecommend === false;
+
+    // 3. 闸门（被拦/抑止推荐则 none）
     const threshold = thresholdFromAggressiveness(state.aggressiveness);
-    const gate: GateDecision = presetUnmatched ? "none" : decideGate(intent.strength, threshold);
+    const gate: GateDecision = blocked || suppressAd ? "none" : decideGate(intent.strength, threshold);
 
-    // 3. 竞价（仅同品类，gate !== none 才进入；用语义 matchMap）
+    // 4. 竞价（仅同品类，gate !== none 才进入；用语义 matchMap）
     let candidates: BidCandidate[] = [];
     let winner: Advertiser | null = null;
     if (gate !== "none") {
@@ -162,11 +242,31 @@ export const useStore = create<State>((set, get) => ({
     // 5. 信任损耗
     const trustCost = computeTrustCost(gate, intent.strength);
 
-    // 7-8. AI 回复正文 + 是否出卡。命中预设场景→罐头回复，否则→演示提示。
+    // 7-8. AI 回复正文 + 是否出卡。
+    //   被拦 → 拦阻文案；
+    //   抑止推荐 → LLM 的判断说明(reason),空则兜底；不出卡
+    //   预设模式 → PresetEngine.reply(罐头/切换提示)；
+    //   LLM 模式域内 → 受控散文,调用/校验失败 → fail-closed 回退预设罐头
     const shown = gate === "trigger" && !!winner;
-    const aiText = presetUnmatched
-      ? SWITCH_MSG
-      : await engine.reply(text, intent, winner, gate, history);
+    let aiText: string;
+    if (blocked) {
+      aiText = blockedMsg;
+    } else if (suppressAd) {
+      // 抑止推荐:用 LLM 的判断说明作回复,空则兜底；不再走 reply 二次调用
+      aiText = intent.reason?.trim() ? intent.reason.trim() : DEFAULT_SUPPRESS_MSG;
+    } else if (!usingLlm) {
+      aiText = await fb.reply(text, intent, winner, gate, history);
+    } else {
+      try {
+        const engine = buildEngine(state);
+        aiText = await engine.reply(text, intent, winner, gate, history);
+      } catch (e) {
+        // LLM 调用失败 或 品牌校验失败 → 静默回退预设罐头
+        llmError = (llmError ? llmError + "；" : "") + `回复:${e instanceof Error ? e.message : e}`;
+        fellBack = true;
+        aiText = await fb.reply(text, intent, winner, gate, history);
+      }
+    }
     const showCard = shown;
 
     // 9. eval
@@ -185,6 +285,7 @@ export const useStore = create<State>((set, get) => ({
       winner,
       aiText,
       showCard,
+      judgment: suppressAd || undefined, // 抑止推荐:标记为"判断回复",前端独立样式
       trustCost,
       eval: evalScore,
       matchMap,
@@ -208,6 +309,21 @@ export const useStore = create<State>((set, get) => ({
       revenueSeries,
       retentionSeries,
       thinking: false,
+      llmError,
+    });
+
+    // 对话埋点：fire-and-forget，后端挂了也不影响前台体验（reporter 内部吞掉一切错误）
+    reportTurn({
+      userText: text,
+      aiText,
+      gate,
+      category: intent.category,
+      strength: intent.strength,
+      showCard,
+      winnerId: winner?.id ?? null,
+      aggressiveness: state.aggressiveness,
+      engineMode: state.engineMode,
+      fallback: fellBack,
     });
   },
 
@@ -239,6 +355,14 @@ export const useStore = create<State>((set, get) => ({
     });
   },
 
+  setEngineMode: (m) => set({ engineMode: m }),
+  setLlmConfig: (k) =>
+    set((s) => ({
+      llmBaseURL: k.baseURL ?? s.llmBaseURL,
+      llmApiKey: k.apiKey ?? s.llmApiKey,
+      llmModel: k.model ?? s.llmModel,
+    })),
+
   reset: () =>
     set({
       aggressiveness: 0.25,
@@ -252,6 +376,7 @@ export const useStore = create<State>((set, get) => ({
       revenueSeries: [],
       retentionSeries: [],
       thinking: false,
+      llmError: null,
       tourActive: false,
       tourStep: 0,
     }),

@@ -8,6 +8,8 @@ export interface IntentResult {
   layer: IntentLayer;
   category: Category;
   reason: string;
+  inScope?: boolean; // LLM 显式判定:是否真属本 demo 支持域(手机选购/装修/情感陪伴)。电脑/平板/相机/家电/汽车等→false
+  shouldRecommend?: boolean; // LLM 判定:这一轮是否应推荐广告。用户否定/嫌贵上一条且池中无更合适选项→false(此时 reason 写判断说明)
 }
 
 export interface ProductInfo {
@@ -67,6 +69,7 @@ export interface Turn {
   winner: Advertiser | null;
   aiText: string;
   showCard: boolean;
+  judgment?: boolean; // LLM 判定"本轮不应出卡"的判断回复(用户嫌贵/否定上一条推荐)——前端用独立样式渲染,区别于普通回答
   trustCost: number;
   eval: EvalScore;
   matchMap: Record<string, number>; // 语义匹配度缓存(id→0~1)，发送时算一次，回溯重算复用

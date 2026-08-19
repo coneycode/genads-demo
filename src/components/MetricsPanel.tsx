@@ -109,7 +109,7 @@ export default function MetricsPanel({
               redLineLabel={`红线 > ${RED_LINES.negativeFeedback}%`}
             />
             <Bar
-              label="主动关闭商业化"
+              label="主动结束会话率"
               value={metrics.activeClose}
               unit="%"
               breach={bClose}
