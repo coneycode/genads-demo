@@ -5,7 +5,7 @@ import { SCENARIOS, exactScenario } from "../data/scenarios";
 import { keywordMatchScore } from "./bidding";
 
 export const SWITCH_MSG =
-  "预设模式未接入真实大模型，暂无法回答您的问题，请切换到真实 LLM 再对话。";
+  "当前仅做演示用，未接入真实大模型，暂无法回答您的问题。";
 
 export interface IntentEngine {
   name: string;
@@ -112,7 +112,7 @@ export class PresetEngine implements IntentEngine {
     gate: GateDecision,
     _history?: { role: "user" | "assistant"; content: string }[]
   ): Promise<string> {
-    // 命中预设场景 → 罐头回复（tour 依赖）；否则老实提示切到 LLM
+    // 命中预设场景 → 罐头回复（tour 依赖）；否则提示未接入真实大模型
     if (exactScenario(query)) return genCannedReply(intent, gate, winner);
     return SWITCH_MSG;
   }

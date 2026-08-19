@@ -6,18 +6,12 @@ import type {
   BidCandidate,
   EvalScore,
   GateDecision,
-  IntentResult,
   Metrics,
   Turn,
 } from "../engine/types";
 import { ADVERTISERS } from "../data/advertisers";
 import { exactScenario } from "../data/scenarios";
-import {
-  PresetEngine,
-  LLMEngine,
-  SWITCH_MSG,
-  type IntentEngine,
-} from "../engine/intentEngine";
+import { PresetEngine, SWITCH_MSG } from "../engine/intentEngine";
 import { rankBids } from "../engine/bidding";
 import {
   computeMetricsFromTurns,
@@ -26,8 +20,6 @@ import {
   thresholdFromAggressiveness,
 } from "../engine/trustModel";
 import { evaluate } from "../engine/evaluator";
-
-type EngineMode = "preset" | "llm";
 
 interface ChatMessage {
   id: string;
@@ -45,11 +37,6 @@ function turnsOf(msgs: ChatMessage[]): Turn[] {
 
 interface State {
   aggressiveness: number;
-  engineMode: EngineMode;
-  llmBaseURL: string;
-  llmApiKey: string;
-  llmModel: string;
-  llmError: string | null; // 真实 LLM 调用失败原因（null=未用或成功）
   thinking: boolean; // AI 正在生成回复（打字指示器）
 
   advertisers: Advertiser[]; // 含可变 bid
@@ -70,8 +57,6 @@ interface State {
   sendMessage: (text: string) => Promise<void>;
   setAggressiveness: (v: number) => void;
   setBid: (advertiserId: string, bid: number) => void;
-  setEngineMode: (m: EngineMode) => void;
-  setLlmConfig: (k: { baseURL?: string; apiKey?: string; model?: string }) => void;
   reset: () => void;
   startTour: () => void;
   nextTourStep: () => void;
@@ -90,18 +75,6 @@ const INITIAL_METRICS: Metrics = {
 
 let idc = 0;
 const nid = () => `m${++idc}`;
-
-function buildEngine(s: State): IntentEngine {
-  // LLM 模式即用 LLMEngine：有用户 key→直连；无 key→走 /api/llm 代理(密钥在服务器)
-  if (s.engineMode === "llm") {
-    return new LLMEngine({
-      baseURL: s.llmBaseURL,
-      apiKey: s.llmApiKey,
-      model: s.llmModel,
-    });
-  }
-  return new PresetEngine();
-}
 
 // 仅重排"当前 turn"的竞价（出价变化时用）。保留该 turn 的闸门/matchMap/回复正文，
 // 只用新出价重算 candidates/winner/showCard/eval。不动历史、不动闸门——
@@ -139,11 +112,6 @@ function recomputeCurrentTurn(
 
 export const useStore = create<State>((set, get) => ({
   aggressiveness: 0.25,
-  engineMode: "preset",
-  llmBaseURL: "https://api.deepseek.com",
-  llmApiKey: "",
-  llmModel: "deepseek-v4-flash",
-  llmError: null,
 
   advertisers: ADVERTISERS.map((a) => ({ ...a })),
   messages: [],
@@ -162,8 +130,7 @@ export const useStore = create<State>((set, get) => ({
 
   sendMessage: async (text: string) => {
     const state = get();
-    // LLM 模式无论有无用户 key 都走 LLMEngine：有 key→直连；无 key→/api/llm 代理
-    const usingLlm = state.engineMode === "llm";
+    // 仅预设引擎：不接真实大模型，非预设场景统一回演示提示，不竞价/不出卡。
     set({ thinking: true });
 
     // 近期对话历史(多轮上下文),让模型理解追问(如"还是有点贵"=要更便宜)
@@ -172,28 +139,13 @@ export const useStore = create<State>((set, get) => ({
       .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.text })) as
       { role: "user" | "assistant"; content: string }[];
 
-    // 1. 意图 + 语义匹配（合并为一次调用，省一次往返；LLM 失败→回退 preset 关键词）
-    let intent: IntentResult;
-    let matchMap: Record<string, number> = {};
-    let llmError: string | null = null;
-    {
-      const fb = new PresetEngine();
-      try {
-        const engine = usingLlm ? buildEngine(state) : fb;
-        const r = await engine.analyzeAndMatch(text, state.advertisers, history);
-        intent = r.intent;
-        matchMap = r.matchMap;
-      } catch (e) {
-        llmError = e instanceof Error ? e.message : String(e);
-        const r = await fb.analyzeAndMatch(text, state.advertisers, history);
-        intent = r.intent;
-        matchMap = r.matchMap;
-      }
-      set({ llmError });
-    }
+    const engine = new PresetEngine();
 
-    // 预设模式 + 非预设场景：预设处理不了任意输入，只回切换提示，不竞价/不出卡
-    const presetUnmatched = state.engineMode === "preset" && !exactScenario(text);
+    // 1. 意图 + 语义匹配（预设=关键词即时判定）
+    const { intent, matchMap } = await engine.analyzeAndMatch(text, state.advertisers, history);
+
+    // 预设模式 + 非预设场景：只回演示提示，不竞价/不出卡
+    const presetUnmatched = !exactScenario(text);
 
     // 2. 闸门
     const threshold = thresholdFromAggressiveness(state.aggressiveness);
@@ -210,23 +162,11 @@ export const useStore = create<State>((set, get) => ({
     // 5. 信任损耗
     const trustCost = computeTrustCost(gate, intent.strength);
 
-    // 7-8. AI 回复正文 + 是否出卡。回复由引擎生成：预设=罐头/切换提示，LLM=模型自然回答。
+    // 7-8. AI 回复正文 + 是否出卡。命中预设场景→罐头回复，否则→演示提示。
     const shown = gate === "trigger" && !!winner;
-    let aiText: string;
-    if (presetUnmatched) {
-      aiText = SWITCH_MSG;
-    } else {
-      const fb = new PresetEngine();
-      try {
-        const engine = usingLlm ? buildEngine(state) : fb;
-        aiText = await engine.reply(text, intent, winner, gate, history);
-      } catch (e) {
-        if (usingLlm)
-          llmError = (llmError ? llmError + "；" : "") + `回复:${e instanceof Error ? e.message : e}`;
-        set({ llmError });
-        aiText = await fb.reply(text, intent, winner, gate, history);
-      }
-    }
+    const aiText = presetUnmatched
+      ? SWITCH_MSG
+      : await engine.reply(text, intent, winner, gate, history);
     const showCard = shown;
 
     // 9. eval
@@ -299,14 +239,6 @@ export const useStore = create<State>((set, get) => ({
     });
   },
 
-  setEngineMode: (m) => set({ engineMode: m }),
-  setLlmConfig: (k) =>
-    set((s) => ({
-      llmBaseURL: k.baseURL ?? s.llmBaseURL,
-      llmApiKey: k.apiKey ?? s.llmApiKey,
-      llmModel: k.model ?? s.llmModel,
-    })),
-
   reset: () =>
     set({
       aggressiveness: 0.25,
@@ -320,7 +252,6 @@ export const useStore = create<State>((set, get) => ({
       revenueSeries: [],
       retentionSeries: [],
       thinking: false,
-      llmError: null,
       tourActive: false,
       tourStep: 0,
     }),
